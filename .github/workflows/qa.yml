@@ -164,6 +164,7 @@ jobs:
           esac
 
           {
+            echo '<!-- mobile-qa-ios -->'
             echo "$header"
             echo
             printf '%s\n' "${REPORT:-The agent produced no report. See the job log.}"
@@ -174,6 +175,14 @@ jobs:
             fi
             echo "[Full run log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · [recording]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts)"
           } > comment.md
+
+          # Drop earlier QA comments so the PR carries only the latest result.
+          # The marker keeps this from touching anyone else's comments.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- mobile-qa-ios -->")) | .id' \
+          | while read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" || true
+            done
 
           gh pr comment "$PR_NUMBER" --body-file comment.md
 
