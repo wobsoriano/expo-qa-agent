@@ -63,10 +63,13 @@ jobs:
             --bundle-output "$APP_PATH/main.jsbundle" \
             --assets-dest "$APP_PATH"
 
+      # No model pinned: the action picks whatever iPhone the image ships,
+      # so a runner-image bump cannot break the job.
       - name: Boot simulator
         uses: futureware-tech/simulator-action@v5
         with:
-          model: 'iPhone 16'
+          os: iOS
+          wait_for_boot: true
 
       - name: Install app and open QA session
         run: ./scripts/setup-ios-sim.sh "$APP_PATH"
