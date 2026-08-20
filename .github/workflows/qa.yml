@@ -53,12 +53,16 @@ jobs:
 
       - name: Build app (Release)
         if: steps.app-cache.outputs.cache-hit != 'true'
+        env:
+          EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
         run: npx expo run:ios --configuration Release --device generic --output ./build --no-bundler
 
       # A cached shell carries the JS it was built with. Re-embed this commit's
       # bundle so the agent always tests the code in the PR.
       - name: Embed current JS bundle
         if: steps.app-cache.outputs.cache-hit == 'true'
+        env:
+          EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
         run: |
           npx expo export:embed --platform ios --dev false \
             --bundle-output "$APP_PATH/main.jsbundle" \
@@ -79,6 +83,8 @@ jobs:
         working-directory: agent-qa
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLERK_TEST_EMAIL: ${{ secrets.CLERK_TEST_EMAIL }}
+          CLERK_TEST_PASSWORD: ${{ secrets.CLERK_TEST_PASSWORD }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |

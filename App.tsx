@@ -1,18 +1,47 @@
+import { ClerkProvider, useAuth, useUser } from '@clerk/expo';
+import { AuthView, UserButton } from '@clerk/expo/native';
+import { tokenCache } from '@clerk/expo/token-cache';
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
-export default function App() {
-  const [greeting, setGreeting] = useState('Hello World');
+const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY!;
+
+function Screen() {
+  const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
+  const { user } = useUser();
+
+  if (!isLoaded) {
+    return <View style={styles.container} />;
+  }
+
+  if (!isSignedIn) {
+    return (
+      <View style={styles.container}>
+        <AuthView isDismissible={false} />
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.greeting}>{greeting}</Text>
-      <Pressable style={styles.button} onPress={() => setGreeting('Awesome')}>
-        <Text style={styles.buttonLabel}>Make it awesome</Text>
-      </Pressable>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <UserButton />
+      </View>
+      <View style={styles.body}>
+        <Text style={styles.greeting}>
+          Signed in as {user?.primaryEmailAddress?.emailAddress}
+        </Text>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
+    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+      <Screen />
       <StatusBar style="auto" />
-    </View>
+    </ClerkProvider>
   );
 }
 
@@ -20,23 +49,22 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  body: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 24,
+    paddingHorizontal: 24,
   },
   greeting: {
-    fontSize: 28,
-    fontWeight: '600',
-  },
-  button: {
-    backgroundColor: '#111',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  buttonLabel: {
-    color: '#fff',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '500',
+    textAlign: 'center',
   },
 });
