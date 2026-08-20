@@ -9,7 +9,7 @@ const SESSION = 'qa-run';
 const agentDevice = defineTool({
 	name: 'agent_device',
 	description:
-		'Drive the iOS simulator with one agent-device command: `snapshot -i` to inspect, `press`/`fill` to act, `screenshot` to capture. The session flag is added for you.',
+		'Run one agent-device command against the iOS simulator: `snapshot -i` to inspect, `press`/`fill` to act. The session flag is added for you.',
 	input: v.object({ args: v.array(v.string()) }),
 	async run({ data }) {
 		const result = await $`agent-device ${data.args} --session ${SESSION}`.nothrow().quiet();

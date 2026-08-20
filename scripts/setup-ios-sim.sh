@@ -8,9 +8,8 @@ BUNDLE_ID="com.wobsoriano.expo-clerk-qa-agent"
 
 xcrun simctl install booted "$APP_PATH"
 
-# Building the runner is slow on a cold machine, and slower still when the
-# native build was restored from cache and never warmed Xcode. Without this
-# the first interaction times out.
+# On a cache hit no xcodebuild runs, so the runner is built cold on first
+# use and the interaction times out. Build it up front instead.
 agent-device prepare ios-runner --platform ios --timeout 600000
 
 agent-device open "$BUNDLE_ID" --session qa-run

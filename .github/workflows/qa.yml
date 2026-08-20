@@ -64,8 +64,7 @@ jobs:
             --bundle-output "$APP_PATH/main.jsbundle" \
             --assets-dest "$APP_PATH"
 
-      # No model pinned: the action picks whatever iPhone the image ships,
-      # so a runner-image bump cannot break the job.
+      # No model pinned, so a runner-image bump cannot break the job.
       - name: Boot simulator
         uses: futureware-tech/simulator-action@v5
         with:
@@ -90,9 +89,7 @@ jobs:
           xcrun simctl io booted recordVideo --codec h264 --force "$RUNNER_TEMP/qa-run.mp4" &
           recorder_pid=$!
 
-          status=0
-          npm run --silent qa -- --json --message "$message" > qa-result.json || status=$?
-          echo "agent exit status: $status"
+          npm run --silent qa -- --json --message "$message" > qa-result.json || true
 
           # SIGINT lets the recorder finalise the file; SIGKILL would corrupt it.
           kill -INT "$recorder_pid" 2>/dev/null || true
@@ -125,23 +122,21 @@ jobs:
           path: ${{ runner.temp }}/qa-run.mp4
           if-no-files-found: ignore
 
-      # Inline playback needs a user token: the attachments endpoint rejects
-      # the Actions installation token. Without the secret the comment still
-      # posts, linking the artifact instead.
+      # The attachments endpoint rejects the Actions token, so inline playback
+      # needs a user token. Without it the comment links the artifact instead.
       - name: Publish recording
         if: always()
         id: recording
         env:
-          GH_TOKEN: ${{ github.token }}
           ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
+          REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           video="$RUNNER_TEMP/qa-run.mp4"
           [ -s "$video" ] || { echo "::notice::No recording captured."; exit 0; }
           [ -n "$ATTACHMENTS_TOKEN" ] || { echo "::notice::ATTACHMENTS_TOKEN not set; skipping inline video."; exit 0; }
 
-          repo_id="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.id')"
           response="$(curl -sS -X POST \
-            "https://uploads.github.com/user-attachments/assets?name=qa-run.mp4&content_type=video/mp4&repository_id=$repo_id" \
+            "https://uploads.github.com/user-attachments/assets?name=qa-run.mp4&content_type=video/mp4&repository_id=$REPOSITORY_ID" \
             -H "Authorization: Bearer $ATTACHMENTS_TOKEN" \
             -H "Accept: application/json" \
             --data-binary @"$video")"
