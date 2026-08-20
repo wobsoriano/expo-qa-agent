@@ -117,26 +117,40 @@ jobs:
             echo "QA_REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Upload recording artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-recording
+          path: ${{ runner.temp }}/qa-run.mp4
+          if-no-files-found: ignore
+
+      # Inline playback needs a user token: the attachments endpoint rejects
+      # the Actions installation token. Without the secret the comment still
+      # posts, linking the artifact instead.
       - name: Publish recording
         if: always()
         id: recording
         env:
           GH_TOKEN: ${{ github.token }}
+          ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
         run: |
           video="$RUNNER_TEMP/qa-run.mp4"
           [ -s "$video" ] || { echo "::notice::No recording captured."; exit 0; }
+          [ -n "$ATTACHMENTS_TOKEN" ] || { echo "::notice::ATTACHMENTS_TOKEN not set; skipping inline video."; exit 0; }
 
           repo_id="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.id')"
-          url="$(curl -sS -X POST \
+          response="$(curl -sS -X POST \
             "https://uploads.github.com/user-attachments/assets?name=qa-run.mp4&content_type=video/mp4&repository_id=$repo_id" \
-            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Authorization: Bearer $ATTACHMENTS_TOKEN" \
             -H "Accept: application/json" \
-            --data-binary @"$video" | jq -r '.url // empty')"
+            --data-binary @"$video")"
 
+          url="$(printf '%s' "$response" | jq -r '.url // empty')"
           if [ -n "$url" ]; then
             echo "url=$url" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Could not upload the recording; commenting without it."
+            echo "::notice::Upload rejected: $(printf '%s' "$response" | head -c 200)"
           fi
 
       - name: Comment on PR
@@ -163,7 +177,7 @@ jobs:
               echo "$VIDEO_URL"
               echo
             fi
-            echo "[Full run log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            echo "[Full run log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · [recording]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts)"
           } > comment.md
 
           gh pr comment "$PR_NUMBER" --body-file comment.md
