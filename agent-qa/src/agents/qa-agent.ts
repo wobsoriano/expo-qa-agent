@@ -9,10 +9,11 @@ const { CLERK_TEST_EMAIL, CLERK_TEST_PASSWORD } = process.env;
 
 const agentDevice = defineTool({
 	name: 'agent_device',
-	description: 'Run one agent-device command against the device under test and return its output.',
+	description: 'Run one agent-device command and return its output.',
 	input: v.object({ args: v.array(v.string()) }),
 	async run({ data }) {
-		const { stdout, stderr } = await $`agent-device ${data.args} --session qa-run`.nothrow().quiet();
+		const command = $`agent-device ${data.args} --session qa-run`;
+		const { stdout, stderr } = await command.nothrow().quiet();
 		return `${stdout}${stderr}`.slice(0, 8000);
 	},
 });
