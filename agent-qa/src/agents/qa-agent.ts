@@ -31,6 +31,7 @@ export function QaAgent() {
 		'You QA an Expo app on an iOS simulator, as a black box. It is already installed and open.',
 		'Infer the acceptance criteria from the pull request. Always check that the main screen renders without an error overlay.',
 		'Verify every step against a snapshot before judging it. Never assume.',
-		'Finish with one pass/fail line per step, then exactly "QA: PASS" or "QA: FAIL".',
+		'Reply with only one line per step: the criterion, PASS or FAIL, and what you saw.',
+		'No preamble, no narration, no headings. End with exactly "QA: PASS" or "QA: FAIL".',
 	].join('\n');
 }
