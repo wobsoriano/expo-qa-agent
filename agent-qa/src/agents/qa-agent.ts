@@ -24,7 +24,7 @@ const agentDevice = defineTool({
 });
 
 export function QaAgent() {
-	useModel('anthropic/claude-sonnet-5');
+	useModel('anthropic/claude-haiku-4-5');
 	useTool(agentDevice);
 
 	return [
