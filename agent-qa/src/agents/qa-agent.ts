@@ -4,13 +4,15 @@ import { $ } from 'zx';
 import { defineTool, useModel, useTool } from '@flue/runtime';
 import * as v from 'valibot';
 
+const SESSION = 'qa-run';
+
 const agentDevice = defineTool({
 	name: 'agent_device',
 	description:
-		'Run one agent-device CLI command to drive the iOS simulator. Loop: snapshot -i, act on refs (press/fill), re-snapshot, verify. Pass the subcommand and its flags as args.',
+		'Drive the iOS simulator with one agent-device command: `snapshot -i` to inspect, `press`/`fill` to act, `screenshot` to capture. The session flag is added for you.',
 	input: v.object({ args: v.array(v.string()) }),
 	async run({ data }) {
-		const result = await $`agent-device ${data.args}`.nothrow().quiet();
+		const result = await $`agent-device ${data.args} --session ${SESSION}`.nothrow().quiet();
 		return {
 			output: {
 				ok: result.exitCode === 0,
@@ -26,9 +28,9 @@ export function QaAgent() {
 	useTool(agentDevice);
 
 	return [
-		'You QA an Expo app installed on a booted iOS simulator. Bundle id: com.wobsoriano.expo-clerk-qa-agent.',
-		'Pass --session qa-run to every agent_device call so your commands share one session.',
-		'Open the app first, then verify each acceptance step from snapshots, never assume.',
-		'When done, close the session, then reply with one pass/fail line per step and what you observed.',
+		'You QA an Expo app on an iOS simulator, as a black box. It is already installed and open.',
+		'Infer the acceptance criteria from the pull request. Always check that the main screen renders without an error overlay.',
+		'Verify every step against a snapshot before judging it. Never assume.',
+		'Finish with one pass/fail line per step, then exactly "QA: PASS" or "QA: FAIL".',
 	].join('\n');
 }

@@ -1,0 +1,110 @@
+name: Mobile QA
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-qa-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_PATH: ios/build/Build/Products/Release-iphonesimulator/expoclerkqaagent.app
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            agent-qa/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix agent-qa
+          echo "$GITHUB_WORKSPACE/agent-qa/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # The fingerprint covers native inputs only (deps, config plugins, app.json).
+      # It deliberately ignores JS source, so the bundle is re-embedded below.
+      - name: Compute native fingerprint
+        id: fingerprint
+        run: |
+          hash="$(npx @expo/fingerprint fingerprint:generate --platform ios \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).hash))")"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore native build
+        id: app-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.APP_PATH }}
+          key: ios-app-${{ runner.os }}-${{ steps.fingerprint.outputs.hash }}
+
+      - name: Build app (Release)
+        if: steps.app-cache.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          npx expo prebuild --platform ios
+          xcodebuild -workspace ios/expoclerkqaagent.xcworkspace -scheme expoclerkqaagent \
+            -configuration Release -sdk iphonesimulator -derivedDataPath ios/build build | tail -30
+
+      # A cached shell carries the JS it was built with. Re-embed this commit's
+      # bundle so the agent always tests the code in the PR.
+      - name: Embed current JS bundle
+        if: steps.app-cache.outputs.cache-hit == 'true'
+        run: |
+          npx expo export:embed --platform ios --dev false \
+            --bundle-output "$APP_PATH/main.jsbundle" \
+            --assets-dest "$APP_PATH"
+
+      - name: Boot simulator
+        uses: futureware-tech/simulator-action@v5
+        with:
+          model: 'iPhone 16'
+
+      - name: Install app and open QA session
+        run: ./scripts/setup-ios-sim.sh "$APP_PATH"
+
+      - name: Run QA agent
+        working-directory: agent-qa
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -o pipefail
+          message="$(printf 'Pull request under review:\n\nTitle: %s\n\nDescription:\n%s' \
+            "$PR_TITLE" "${PR_BODY:-(no description)}")"
+
+          npm run --silent qa -- --json --message "$message" > qa-result.json
+
+          outcome="$(jq -r '.outcome' qa-result.json)"
+          report="$(jq -r '.message' qa-result.json)"
+
+          printf '%s\n' "$report"
+          {
+            echo '## Mobile QA (iOS)'
+            echo
+            printf '%s\n' "$report"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$outcome" != "completed" ]; then
+            echo "::error::QA agent did not complete (outcome: $outcome)."
+            exit 1
+          fi
+
+          case "$report" in
+            *"QA: PASS"*) echo "QA passed." ;;
+            *"QA: FAIL"*) echo "::error::QA agent reported failures."; exit 1 ;;
+            *) echo "::error::QA agent returned no verdict."; exit 1 ;;
+          esac
