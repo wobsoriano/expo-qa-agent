@@ -5,17 +5,18 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: mobile-qa-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
-  APP_PATH: ios/build/Build/Products/Release-iphonesimulator/expoclerkqaagent.app
+  APP_PATH: build/expoclerkqaagent.app
 
 jobs:
   ios:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -52,11 +53,7 @@ jobs:
 
       - name: Build app (Release)
         if: steps.app-cache.outputs.cache-hit != 'true'
-        run: |
-          set -o pipefail
-          npx expo prebuild --platform ios
-          xcodebuild -workspace ios/expoclerkqaagent.xcworkspace -scheme expoclerkqaagent \
-            -configuration Release -sdk iphonesimulator -derivedDataPath ios/build build | tail -30
+        run: npx expo run:ios --configuration Release --device generic --output ./build --no-bundler
 
       # A cached shell carries the JS it was built with. Re-embed this commit's
       # bundle so the agent always tests the code in the PR.
@@ -67,15 +64,18 @@ jobs:
             --bundle-output "$APP_PATH/main.jsbundle" \
             --assets-dest "$APP_PATH"
 
+      # No model pinned, so a runner-image bump cannot break the job.
       - name: Boot simulator
         uses: futureware-tech/simulator-action@v5
         with:
-          model: 'iPhone 16'
+          os: iOS
+          wait_for_boot: true
 
       - name: Install app and open QA session
         run: ./scripts/setup-ios-sim.sh "$APP_PATH"
 
       - name: Run QA agent
+        id: qa
         working-directory: agent-qa
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -86,25 +86,111 @@ jobs:
           message="$(printf 'Pull request under review:\n\nTitle: %s\n\nDescription:\n%s' \
             "$PR_TITLE" "${PR_BODY:-(no description)}")"
 
-          npm run --silent qa -- --json --message "$message" > qa-result.json
+          xcrun simctl io booted recordVideo --codec h264 --force "$RUNNER_TEMP/qa-run.mp4" &
+          recorder_pid=$!
 
-          outcome="$(jq -r '.outcome' qa-result.json)"
-          report="$(jq -r '.message' qa-result.json)"
+          npm run --silent qa -- --json --message "$message" > qa-result.json || true
+
+          # SIGINT lets the recorder finalise the file; SIGKILL would corrupt it.
+          kill -INT "$recorder_pid" 2>/dev/null || true
+          wait "$recorder_pid" 2>/dev/null || true
+
+          outcome="$(jq -r '.outcome // "unknown"' qa-result.json)"
+          report="$(jq -r '.message // ""' qa-result.json)"
+
+          case "$report" in
+            *"QA: PASS"*) verdict=pass ;;
+            *"QA: FAIL"*) verdict=fail ;;
+            *) verdict=inconclusive ;;
+          esac
+          [ "$outcome" = "completed" ] || verdict=inconclusive
 
           printf '%s\n' "$report"
           {
-            echo '## Mobile QA (iOS)'
-            echo
+            echo "outcome=$outcome"
+            echo "verdict=$verdict"
+            echo "report<<QA_REPORT_EOF"
             printf '%s\n' "$report"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "QA_REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-          if [ "$outcome" != "completed" ]; then
-            echo "::error::QA agent did not complete (outcome: $outcome)."
-            exit 1
+      - name: Upload recording artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-recording
+          path: ${{ runner.temp }}/qa-run.mp4
+          if-no-files-found: ignore
+
+      # The attachments endpoint rejects the Actions token, so inline playback
+      # needs a user token. Without it the comment links the artifact instead.
+      - name: Publish recording
+        if: always()
+        id: recording
+        env:
+          ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          video="$RUNNER_TEMP/qa-run.mp4"
+          [ -s "$video" ] || { echo "::notice::No recording captured."; exit 0; }
+          [ -n "$ATTACHMENTS_TOKEN" ] || { echo "::notice::ATTACHMENTS_TOKEN not set; skipping inline video."; exit 0; }
+
+          response="$(curl -sS -X POST \
+            "https://uploads.github.com/user-attachments/assets?name=qa-run.mp4&content_type=video/mp4&repository_id=$REPOSITORY_ID" \
+            -H "Authorization: Bearer $ATTACHMENTS_TOKEN" \
+            -H "Accept: application/json" \
+            --data-binary @"$video")"
+
+          url="$(printf '%s' "$response" | jq -r '.url // empty')"
+          if [ -n "$url" ]; then
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Upload rejected: $(printf '%s' "$response" | head -c 200)"
           fi
 
-          case "$report" in
-            *"QA: PASS"*) echo "QA passed." ;;
-            *"QA: FAIL"*) echo "::error::QA agent reported failures."; exit 1 ;;
-            *) echo "::error::QA agent returned no verdict."; exit 1 ;;
+      - name: Comment on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+          VERDICT: ${{ steps.qa.outputs.verdict }}
+          REPORT: ${{ steps.qa.outputs.report }}
+          VIDEO_URL: ${{ steps.recording.outputs.url }}
+        run: |
+          case "$VERDICT" in
+            pass) header='### Mobile QA (iOS) — passed' ;;
+            fail) header='### Mobile QA (iOS) — failed' ;;
+            *)    header='### Mobile QA (iOS) — inconclusive' ;;
+          esac
+
+          {
+            echo '<!-- mobile-qa-ios -->'
+            echo "$header"
+            echo
+            printf '%s\n' "${REPORT:-The agent produced no report. See the job log.}"
+            echo
+            if [ -n "$VIDEO_URL" ]; then
+              echo "$VIDEO_URL"
+              echo
+            fi
+            echo "[Full run log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · [recording]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts)"
+          } > comment.md
+
+          # Drop earlier QA comments so the PR carries only the latest result.
+          # The marker keeps this from touching anyone else's comments.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- mobile-qa-ios -->")) | .id' \
+          | while read -r id; do
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" || true
+            done
+
+          gh pr comment "$PR_NUMBER" --body-file comment.md
+
+      - name: Enforce verdict
+        if: always()
+        run: |
+          case "${{ steps.qa.outputs.verdict }}" in
+            pass) echo "QA passed." ;;
+            fail) echo "::error::QA agent reported failures."; exit 1 ;;
+            *) echo "::error::QA agent returned no usable verdict."; exit 1 ;;
           esac
