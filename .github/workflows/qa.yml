@@ -4,7 +4,8 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: mobile-qa-${{ github.head_ref || github.ref }}
@@ -74,7 +75,13 @@ jobs:
       - name: Install app and open QA session
         run: ./scripts/setup-ios-sim.sh "$APP_PATH"
 
+      - name: Install GIF tooling
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet Pillow
+
       - name: Run QA agent
+        id: qa
         working-directory: agent-qa
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -85,25 +92,92 @@ jobs:
           message="$(printf 'Pull request under review:\n\nTitle: %s\n\nDescription:\n%s' \
             "$PR_TITLE" "${PR_BODY:-(no description)}")"
 
-          npm run --silent qa -- --json --message "$message" > qa-result.json
+          "$GITHUB_WORKSPACE/scripts/capture-frames.sh" "$RUNNER_TEMP/qa-frames" &
+          capture_pid=$!
 
-          outcome="$(jq -r '.outcome' qa-result.json)"
-          report="$(jq -r '.message' qa-result.json)"
+          status=0
+          npm run --silent qa -- --json --message "$message" > qa-result.json || status=$?
+          echo "agent exit status: $status"
+
+          kill "$capture_pid" 2>/dev/null || true
+
+          outcome="$(jq -r '.outcome // "unknown"' qa-result.json)"
+          report="$(jq -r '.message // ""' qa-result.json)"
+
+          case "$report" in
+            *"QA: PASS"*) verdict=pass ;;
+            *"QA: FAIL"*) verdict=fail ;;
+            *) verdict=inconclusive ;;
+          esac
+          [ "$outcome" = "completed" ] || verdict=inconclusive
 
           printf '%s\n' "$report"
           {
-            echo '## Mobile QA (iOS)'
-            echo
+            echo "outcome=$outcome"
+            echo "verdict=$verdict"
+            echo "report<<QA_REPORT_EOF"
             printf '%s\n' "$report"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "QA_REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
 
-          if [ "$outcome" != "completed" ]; then
-            echo "::error::QA agent did not complete (outcome: $outcome)."
-            exit 1
+      - name: Build run GIF
+        if: always()
+        id: gif
+        run: |
+          if "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/scripts/make-gif.py" "$RUNNER_TEMP/qa-frames" "$RUNNER_TEMP/qa-run.gif"; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
           fi
 
-          case "$report" in
-            *"QA: PASS"*) echo "QA passed." ;;
-            *"QA: FAIL"*) echo "::error::QA agent reported failures."; exit 1 ;;
-            *) echo "::error::QA agent returned no verdict."; exit 1 ;;
+      - name: Publish GIF
+        if: always() && steps.gif.outputs.built == 'true'
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          path="pr-${PR_NUMBER}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.gif"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="qa: run $GITHUB_RUN_ID for PR #$PR_NUMBER" \
+            -f branch=qa-media \
+            -f content="$(base64 -i "$RUNNER_TEMP/qa-run.gif")" > /dev/null
+          echo "url=https://raw.githubusercontent.com/$GITHUB_REPOSITORY/qa-media/$path" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+          VERDICT: ${{ steps.qa.outputs.verdict }}
+          REPORT: ${{ steps.qa.outputs.report }}
+          GIF_URL: ${{ steps.publish.outputs.url }}
+        run: |
+          case "$VERDICT" in
+            pass) header='### Mobile QA (iOS) — passed' ;;
+            fail) header='### Mobile QA (iOS) — failed' ;;
+            *)    header='### Mobile QA (iOS) — inconclusive' ;;
+          esac
+
+          {
+            echo "$header"
+            echo
+            printf '%s\n' "${REPORT:-The agent produced no report. See the job log.}"
+            echo
+            if [ -n "$GIF_URL" ]; then
+              echo "<img src=\"$GIF_URL\" width=\"280\" alt=\"QA run recording\">"
+              echo
+            fi
+            echo "[Full run log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          } > comment.md
+
+          gh pr comment "$PR_NUMBER" --body-file comment.md
+
+      - name: Enforce verdict
+        if: always()
+        run: |
+          case "${{ steps.qa.outputs.verdict }}" in
+            pass) echo "QA passed." ;;
+            fail) echo "::error::QA agent reported failures."; exit 1 ;;
+            *) echo "::error::QA agent returned no usable verdict."; exit 1 ;;
           esac
