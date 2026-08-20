@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  APP_PATH: ios/build/Build/Products/Release-iphonesimulator/expoclerkqaagent.app
+  APP_PATH: build/expoclerkqaagent.app
 
 jobs:
   ios:
@@ -52,11 +52,7 @@ jobs:
 
       - name: Build app (Release)
         if: steps.app-cache.outputs.cache-hit != 'true'
-        run: |
-          set -o pipefail
-          npx expo prebuild --platform ios
-          xcodebuild -workspace ios/expoclerkqaagent.xcworkspace -scheme expoclerkqaagent \
-            -configuration Release -sdk iphonesimulator -derivedDataPath ios/build build | tail -30
+        run: npx expo run:ios --configuration Release --device generic --output ./build --no-bundler
 
       # A cached shell carries the JS it was built with. Re-embed this commit's
       # bundle so the agent always tests the code in the PR.
