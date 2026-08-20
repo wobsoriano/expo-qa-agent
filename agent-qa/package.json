@@ -1,0 +1,26 @@
+{
+	"name": "agent-qa",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"qa": "flue run src/agents/qa-agent.ts",
+		"dev": "vite dev",
+		"build": "vite build",
+		"start": "node dist/server.mjs",
+		"check:types": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@flue/runtime": "^2.0.3",
+		"hono": "^4.7.0",
+		"valibot": "^1.4.2",
+		"zx": "^8.8.5"
+	},
+	"devDependencies": {
+		"@flue/cli": "^2.0.3",
+		"@flue/vite": "^2.0.3",
+		"@types/node": "^22.10.10",
+		"agent-device": "^0.20.10",
+		"typescript": "^7.0.2",
+		"vite": "^8.0.14"
+	}
+}
